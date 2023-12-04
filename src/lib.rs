@@ -1,7 +1,5 @@
 #![forbid(unsafe_code)]
 
-mod tile;
-
 mod header;
 pub use crate::header::{Compression, Header, TileType};
 

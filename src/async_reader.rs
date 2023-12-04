@@ -23,8 +23,8 @@ use crate::header::{HEADER_SIZE, MAX_INITIAL_BYTES};
 use crate::http::HttpBackend;
 #[cfg(feature = "mmap-async-tokio")]
 use crate::mmap::MmapBackend;
-use crate::tile::tile_id;
 use crate::{Compression, Header};
+use pmtiles2::util::tile_id;
 
 pub struct AsyncPmTilesReader<B, C = NoCache> {
     backend: B,
