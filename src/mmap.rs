@@ -3,7 +3,8 @@ use std::path::Path;
 
 use async_trait::async_trait;
 use bytes::{Buf, Bytes};
-use fmmap::tokio::{AsyncMmapFile, AsyncMmapFileExt as _, AsyncOptions};
+use fmmap::tokio::{AsyncMmapFile, AsyncMmapFileExt, AsyncOptions};
+use tokio::io::AsyncRead;
 
 use crate::async_reader::AsyncBackend;
 use crate::error::{PmtError, PmtResult};

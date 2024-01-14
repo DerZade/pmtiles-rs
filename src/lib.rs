@@ -1,7 +1,6 @@
 #![forbid(unsafe_code)]
 
-mod header;
-pub use crate::header::{Compression, Header, TileType};
+pub use pmtiles2::{Compression, Header, TileType};
 
 mod directory;
 pub use directory::{DirEntry, Directory};

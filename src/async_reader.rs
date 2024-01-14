@@ -2,6 +2,7 @@
 //        so any file larger than 4GB, or an untrusted file with bad data may crash.
 #![allow(clippy::cast_possible_truncation)]
 
+use std::io::Cursor;
 #[cfg(feature = "mmap-async-tokio")]
 use std::path::Path;
 
@@ -10,21 +11,21 @@ use async_trait::async_trait;
 use bytes::Bytes;
 #[cfg(feature = "http-async")]
 use reqwest::{Client, IntoUrl};
-#[cfg(any(feature = "http-async", feature = "mmap-async-tokio"))]
-use tokio::io::AsyncReadExt;
 
 use crate::cache::DirCacheResult;
 #[cfg(any(feature = "http-async", feature = "mmap-async-tokio"))]
 use crate::cache::{DirectoryCache, NoCache};
 use crate::directory::{DirEntry, Directory};
 use crate::error::{PmtError, PmtResult};
-use crate::header::{HEADER_SIZE, MAX_INITIAL_BYTES};
 #[cfg(feature = "http-async")]
 use crate::http::HttpBackend;
 #[cfg(feature = "mmap-async-tokio")]
 use crate::mmap::MmapBackend;
 use crate::{Compression, Header};
 use pmtiles2::util::tile_id;
+
+const HEADER_BYTES: usize = 127; // TODO: Deduplicate with pmtiles2 crate
+const MAX_INITIAL_BYTES: usize = 16_384;
 
 pub struct AsyncPmTilesReader<B, C = NoCache> {
     backend: B,
@@ -49,15 +50,17 @@ impl<B: AsyncBackend + Sync + Send, C: DirectoryCache + Sync + Send> AsyncPmTile
     pub async fn try_from_cached_source(backend: B, cache: C) -> PmtResult<Self> {
         // Read the first 127 and up to 16,384 bytes to ensure we can initialize the header and root directory.
         let mut initial_bytes = backend.read(0, MAX_INITIAL_BYTES).await?;
-        if initial_bytes.len() < HEADER_SIZE {
+        if initial_bytes.len() < HEADER_BYTES {
             return Err(PmtError::InvalidHeader);
         }
 
-        let header = Header::try_from_bytes(initial_bytes.split_to(HEADER_SIZE))?;
+        let shit = initial_bytes.split_to(HEADER_BYTES);
+        let mut header_bytes = Cursor::new(shit.to_vec());
+        let header = Header::from_reader(&mut header_bytes)?;
 
         let directory_bytes = initial_bytes
-            .split_off((header.root_offset as usize) - HEADER_SIZE)
-            .split_to(header.root_length as _);
+            .split_off((header.root_directory_offset as usize) - HEADER_BYTES)
+            .split_to(header.root_directory_length as _);
 
         let root_directory =
             Self::read_compressed_directory(header.internal_compression, directory_bytes).await?;
@@ -75,7 +78,7 @@ impl<B: AsyncBackend + Sync + Send, C: DirectoryCache + Sync + Send> AsyncPmTile
         let tile_id = tile_id(z, x, y);
         let entry = self.find_tile_entry(tile_id).await?;
 
-        let offset = (self.header.data_offset + entry.offset) as _;
+        let offset = (self.header.tile_data_offset + entry.offset) as _;
         let length = entry.length as _;
         let data = self.backend.read_exact(offset, length).await.ok()?;
 
@@ -92,8 +95,8 @@ impl<B: AsyncBackend + Sync + Send, C: DirectoryCache + Sync + Send> AsyncPmTile
     /// Note: by spec, this should be valid JSON. This method currently returns a [String].
     /// This may change in the future.
     pub async fn get_metadata(&self) -> PmtResult<String> {
-        let offset = self.header.metadata_offset as _;
-        let length = self.header.metadata_length as _;
+        let offset = self.header.json_metadata_offset as _;
+        let length = self.header.json_metadata_length as _;
         let metadata = self.backend.read_exact(offset, length).await?;
 
         let decompressed_metadata =
@@ -159,7 +162,7 @@ impl<B: AsyncBackend + Sync + Send, C: DirectoryCache + Sync + Send> AsyncPmTile
     async fn find_entry_rec(&self, tile_id: u64, entry: &DirEntry, depth: u8) -> Option<DirEntry> {
         // the recursion is done as two functions because it is a bit cleaner,
         // and it allows directory to be cached later without cloning it first.
-        let offset = (self.header.leaf_offset + entry.offset) as _;
+        let offset = (self.header.leaf_directories_offset + entry.offset) as _;
 
         let entry = match self.cache.get_dir_entry(offset, tile_id).await {
             DirCacheResult::NotCached => {
@@ -201,17 +204,9 @@ impl<B: AsyncBackend + Sync + Send, C: DirectoryCache + Sync + Send> AsyncPmTile
     }
 
     async fn decompress(compression: Compression, bytes: Bytes) -> PmtResult<Bytes> {
-        let mut decompressed_bytes = Vec::with_capacity(bytes.len() * 2);
-        match compression {
-            Compression::Gzip => {
-                async_compression::tokio::bufread::GzipDecoder::new(&bytes[..])
-                    .read_to_end(&mut decompressed_bytes)
-                    .await?;
-            }
-            _ => todo!("Support other forms of internal compression."),
-        }
+        let vec = pmtiles2::util::decompress_all(compression, &bytes[..])?;
 
-        Ok(Bytes::from(decompressed_bytes))
+        Ok(Bytes::from(vec))
     }
 }
 
